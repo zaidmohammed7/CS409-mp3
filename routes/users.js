@@ -1,15 +1,17 @@
 // routes/users.js
 const express = require('express');
+const mongoose = require('mongoose');
 const User = require('../models/user');
 const Task = require('../models/task');
 
 module.exports = function (router) {
   const r = express.Router();
 
-  // Utilities
+  // Helpers
   const parseJSON = (s) => (s ? JSON.parse(s) : undefined);
   const asBool = (v) => String(v).toLowerCase() === 'true';
   const toInt = (v, dflt = 0) => (v !== undefined ? parseInt(v, 10) : dflt);
+  const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
   const ok = (res, data, message = 'OK') =>
     res.status(200).json({ message, data });
@@ -30,7 +32,7 @@ module.exports = function (router) {
       const select = req.query.select ? parseJSON(req.query.select) : undefined;
       const skip = toInt(req.query.skip, 0);
       const limit =
-        req.query.limit !== undefined ? toInt(req.query.limit) : undefined; // README: unlimited by default for users
+        req.query.limit !== undefined ? toInt(req.query.limit) : undefined; // unlimited by default for users
       const count = asBool(req.query.count);
 
       if (count) {
@@ -58,7 +60,6 @@ module.exports = function (router) {
       const { name, email, pendingTasks } = req.body || {};
       if (!name || !email) return bad(res, 'Name and email are required');
 
-      // Unique email check (helpful feedback aside from index)
       const dup = await User.findOne({ email: String(email).toLowerCase() });
       if (dup) return bad(res, 'A user with this email already exists');
 
@@ -68,7 +69,6 @@ module.exports = function (router) {
         pendingTasks: Array.isArray(pendingTasks) ? pendingTasks : [],
       });
 
-      // If user POST included pendingTasks, reflect to Tasks:
       if (Array.isArray(user.pendingTasks) && user.pendingTasks.length) {
         await Task.updateMany(
           { _id: { $in: user.pendingTasks }, completed: false },
@@ -84,11 +84,14 @@ module.exports = function (router) {
     }
   });
 
-  // GET /api/users/:id  (supports ?select=)
+  // GET /api/users/:id (supports ?select=)
   r.get('/:id', async (req, res) => {
     try {
+      const id = req.params.id;
+      if (!isValidId(id)) return notFound(res, 'User not found');
+
       const select = req.query.select ? parseJSON(req.query.select) : undefined;
-      let q = User.findById(req.params.id);
+      let q = User.findById(id);
       if (select) q = q.select(select);
       const doc = await q.exec();
       if (!doc) return notFound(res, 'User not found');
@@ -99,14 +102,15 @@ module.exports = function (router) {
     }
   });
 
-  // PUT /api/users/:id  (replace; must include name & email)
+  // PUT /api/users/:id (replace; requires name & email)
   r.put('/:id', async (req, res) => {
     try {
       const id = req.params.id;
+      if (!isValidId(id)) return notFound(res, 'User not found');
+
       const { name, email, pendingTasks } = req.body || {};
       if (!name || !email) return bad(res, 'Name and email are required');
 
-      // ensure unique email (excluding this user)
       const dup = await User.findOne({
         email: String(email).toLowerCase(),
         _id: { $ne: id },
@@ -116,20 +120,16 @@ module.exports = function (router) {
       const before = await User.findById(id);
       if (!before) return notFound(res, 'User not found');
 
-      // Update user
       before.name = name;
       before.email = email;
       before.pendingTasks = Array.isArray(pendingTasks) ? pendingTasks : [];
       const user = await before.save();
 
-      // Two-way sync:
-      // 1) Assign all tasks listed in pendingTasks to this user (only if not completed)
       await Task.updateMany(
         { _id: { $in: user.pendingTasks }, completed: false },
         { $set: { assignedUser: String(user._id), assignedUserName: user.name } }
       );
 
-      // 2) Unassign tasks that used to be pending for this user but are no longer listed
       const nowSet = new Set(user.pendingTasks);
       const toUnassign = await Task.find({
         assignedUser: String(user._id),
@@ -153,21 +153,22 @@ module.exports = function (router) {
     }
   });
 
-  // DELETE /api/users/:id  (unassign this user's pending tasks; return 204)
+  // DELETE /api/users/:id
   r.delete('/:id', async (req, res) => {
     try {
       const id = req.params.id;
+      if (!isValidId(id)) return notFound(res, 'User not found');
+
       const user = await User.findById(id);
       if (!user) return notFound(res, 'User not found');
 
-      // Unassign all of this user's *pending* tasks
       await Task.updateMany(
         { assignedUser: String(id), completed: false },
         { $set: { assignedUser: '', assignedUserName: 'unassigned' } }
       );
 
       await user.deleteOne();
-      return res.status(204).send(); // no content
+      return res.status(204).send();
     } catch (e) {
       return fail(res, e);
     }
