@@ -1,10 +1,34 @@
-// Load required packages
-var mongoose = require('mongoose');
+// models/user.js
+const mongoose = require('mongoose');
 
-// Define our user schema
-var UserSchema = new mongoose.Schema({
-    name: String
-});
+const UserSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, 'User name is required'],
+      trim: true,
+    },
+    email: {
+      type: String,
+      required: [true, 'User email is required'],
+      unique: true,
+      trim: true,
+      lowercase: true,
+    },
+    pendingTasks: {
+      type: [String], // store Task _id strings of *pending* (not completed) tasks
+      default: [],
+    },
+    dateCreated: {
+      type: Date,
+      default: Date.now,
+      immutable: true,
+    },
+  },
+  { versionKey: false }
+);
 
-// Export the Mongoose model
+// Helpful unique index (Render/Atlas will respect it)
+UserSchema.index({ email: 1 }, { unique: true });
+
 module.exports = mongoose.model('User', UserSchema);
